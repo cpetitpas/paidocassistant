@@ -29,5 +29,7 @@ Official documents can be overwhelming and confusing. PAI Assistant translates t
 ## Built in Flutter/Dart
 
 To build:
+
 apk: flutter build apk --release
+
 aab (Google Play):  flutter build appbundle --release
