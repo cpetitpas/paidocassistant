@@ -17,12 +17,12 @@ plugins {
 }
 
 android {
-    namespace = "com.example.paidocassistant"
+    namespace = "com.paidocassistant.app"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
     defaultConfig {
-        applicationId = "com.example.paidocassistant"
+        applicationId = "com.paidocassistant.app"
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode

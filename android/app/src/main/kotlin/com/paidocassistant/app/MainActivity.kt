@@ -1,4 +1,4 @@
-package com.example.paidocassistant
+package com.paidocassistant.app
 
 import io.flutter.embedding.android.FlutterActivity
 

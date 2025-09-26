@@ -8,7 +8,7 @@ flutter:
   assets:
   - assets/images/robot.png
 
-version: 1.0.0+1
+version: 1.0.0+17
 
 dependencies:
   flutter:

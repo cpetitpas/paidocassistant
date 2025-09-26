@@ -43,18 +43,137 @@ class WorkflowScreen extends StatefulWidget {
   State<WorkflowScreen> createState() => _WorkflowScreenState();
 }
 
+class UpgradePage extends StatelessWidget {
+  final int trialDaysRemaining;
+  final void Function(String productId) onPurchase;
+  final bool isLifetimePurchased;
+  final VoidCallback onRestorePurchases;
+  final VoidCallback onSetTrialDate;
+
+  const UpgradePage({
+    super.key,
+    required this.trialDaysRemaining,
+    required this.onPurchase,
+    required this.isLifetimePurchased,
+    required this.onRestorePurchases,
+    required this.onSetTrialDate,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text("Upgrade"),
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () => Navigator.pop(context),
+        ),
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                isLifetimePurchased
+                    ? "You have lifetime access! No further purchase is needed."
+                    : trialDaysRemaining > 0
+                        ? "Your free trial has $trialDaysRemaining day${trialDaysRemaining > 1 ? 's' : ''} remaining.\n\nUpgrade now to unlock full access:"
+                        : "Your free trial has ended.\n\nUpgrade to continue using the app:",
+                style: const TextStyle(fontSize: 16),
+              ),
+              const SizedBox(height: 20),
+              if (!isLifetimePurchased) ...[
+                ElevatedButton(
+                  onPressed: () => onPurchase("monthly"),
+                  child: Text(useTestIds ? "Test: \$1.99 / month" : "\$1.99 / month"),
+                ),
+                ElevatedButton(
+                  onPressed: () => onPurchase("yearly"),
+                  child: Text(useTestIds ? "Test: \$19.99 / year" : "\$19.99 / year"),
+                ),
+              ],
+              ElevatedButton(
+                onPressed: isLifetimePurchased ? null : () => onPurchase("lifetime"),
+                child: Text(useTestIds ? "Test: \$49 Lifetime" : "\$49 Lifetime"),
+              ),
+              const SizedBox(height: 20),
+              ElevatedButton(
+                onPressed: onRestorePurchases,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.grey.shade300,
+                  foregroundColor: Colors.black,
+                ),
+                child: const Text("Restore Purchases"),
+              ),
+              const SizedBox(height: 20),
+              ElevatedButton(
+                onPressed: onSetTrialDate,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.orange,
+                  foregroundColor: Colors.black,
+                ),
+                child: const Text("Set Trial Date (Test Only)"),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// Toggle flag: true = test mode, false = production
+const bool useTestIds = false;
+
+// Real product IDs from Google Play Console
+const String subscriptionId = "pai_subscription";
+const String lifetimePlanId = "pai_lifetime";
+
+// Test product IDs provided by Google
+const String testPurchasedId = "android.test.purchased";
+const String testCanceledId = "android.test.canceled";
+const String testRefundedId = "android.test.refunded";
+const String testUnavailableId = "android.test.item_unavailable";
+
+// Function to get the current product ID
+String getProductId(String productKey) {
+  if (useTestIds) {
+    switch (productKey) {
+      case "monthly":
+      case "yearly":
+      case "lifetime":
+        return testPurchasedId;
+      default:
+        return testUnavailableId;
+    }
+  } else {
+    switch (productKey) {
+      case "monthly":
+      case "yearly":
+        return subscriptionId;
+      case "lifetime":
+        return lifetimePlanId;
+      default:
+        return "";
+    }
+  }
+}
+
 class _WorkflowScreenState extends State<WorkflowScreen> {
-  bool limitContext = true; // default: limit ON
-  int? currentStep = 0; // Tracks current step in the steps list
+  bool limitContext = true;
+  int? currentStep = 0;
   int trialDaysRemaining = 0;
-  Timer? _trialTimer; 
+  Timer? _trialTimer;
   String apiKey = "";
   final ScrollController chatScrollController = ScrollController();
   final TextEditingController queryController = TextEditingController();
   final List<Map<String, String>> chatHistory = [];
   final InAppPurchase _iap = InAppPurchase.instance;
-  final Map<String, ProductDetails> _productDetails = {};
-  
+  final Map<String, List<ProductDetails>> _productDetails = {};
+  bool isLifetimePurchased = false;
+
   List<String> pdfPaths = [];
   List<String> previousQuestions = [];
   bool termsExpanded = false;
@@ -67,6 +186,7 @@ class _WorkflowScreenState extends State<WorkflowScreen> {
   late AskService askService;
   late StreamSubscription<List<PurchaseDetails>> _subscription;
   final FlutterSecureStorage storage = const FlutterSecureStorage();
+  final PurchaseService purchaseService = PurchaseService();
 
   @override
   void initState() {
@@ -79,19 +199,35 @@ class _WorkflowScreenState extends State<WorkflowScreen> {
     _checkAccess();
     _subscription = _iap.purchaseStream.listen(
       (purchases) async {
+        bool hasLifetime = false;
         for (var purchase in purchases) {
           if (purchase.status == PurchaseStatus.purchased ||
               purchase.status == PurchaseStatus.restored) {
             await _handlePurchase(purchase);
+            if (purchase.productID == lifetimePlanId) {
+              hasLifetime = true;
+            }
           } else if (purchase.status == PurchaseStatus.error) {
+            loggingService.error("Purchase error: ${purchase.error?.message}");
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(content: Text("Purchase Error: ${purchase.error?.message}")),
             );
           }
         }
+        if (!hasLifetime && purchases.isNotEmpty) {
+          loggingService.log("No lifetime purchase found in restored purchases. Clearing lifetime status.");
+          await purchaseService.setLifetime(false);
+          setState(() {
+            isLifetimePurchased = false;
+          });
+        }
       },
-      onDone: () => _subscription.cancel(),
+      onDone: () {
+        loggingService.log("Purchase stream closed.");
+        _subscription.cancel();
+      },
       onError: (error) {
+        loggingService.error("Purchase stream error: $error");
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text("Purchase Stream Error: $error")),
         );
@@ -99,6 +235,16 @@ class _WorkflowScreenState extends State<WorkflowScreen> {
     );
     _loadProducts();
     _loadApiKey();
+    _checkLifetimeStatus();
+    Future.delayed(Duration.zero, checkPastPurchases);
+  }
+
+  Future<void> _checkLifetimeStatus() async {
+    final hasLifetime = await purchaseService.hasLifetime();
+    setState(() {
+      isLifetimePurchased = hasLifetime;
+    });
+    loggingService.log("Checked lifetime status: $hasLifetime");
   }
 
   Future<void> _loadApiKey() async {
@@ -112,73 +258,361 @@ class _WorkflowScreenState extends State<WorkflowScreen> {
     }
   }
 
-  Future<void> _purchase(String productId) async {
-    if (!_productDetails.containsKey(productId)) {
+  bool _isPurchasing = false;
+
+  Future<void> _purchase(String productKey) async {
+    if (_isPurchasing) {
+      loggingService.log("Purchase already in progress, ignoring: $productKey");
+      return;
+    }
+    _isPurchasing = true;
+    try {
+      if (productKey == "monthly" || productKey == "yearly") {
+        final hasLifetime = await purchaseService.hasLifetime();
+        if (hasLifetime) {
+          loggingService.log("Subscription purchase rejected: Lifetime access already purchased.");
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text("You already have lifetime access. Subscription not needed."),
+            ),
+          );
+          return;
+        }
+      }
+
+      if (productKey == "lifetime") {
+        final hasSubscription = await purchaseService.hasValidSubscription();
+        if (hasSubscription) {
+          final bool? shouldContinue = await showDialog<bool>(
+            context: context,
+            builder: (context) => AlertDialog(
+              title: const Text("Active Subscription Detected"),
+              content: const Text(
+                "You have an active subscription. "
+                "Purchasing a lifetime license will make the subscription unnecessary. "
+                "You can cancel your subscription in the Google Play Store if you proceed. "
+                "Do you want to continue with the lifetime purchase?",
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context, false),
+                  child: const Text("Cancel"),
+                ),
+                ElevatedButton(
+                  onPressed: () => Navigator.pop(context, true),
+                  child: const Text("Continue"),
+                ),
+              ],
+            ),
+          );
+          if (shouldContinue != true) {
+            loggingService.log("Lifetime purchase aborted due to active subscription.");
+            return;
+          }
+        }
+      }
+
+      final productId = getProductId(productKey);
+      loggingService.log("Purchase started: $productId (productKey=$productKey)");
+
+      if (!_productDetails.containsKey(productId) || _productDetails[productId]!.isEmpty) {
+        loggingService.error("Product not loaded: $productId (productKey=$productKey)");
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Product not loaded")),
+        );
+        return;
+      }
+
+      ProductDetails selectedDetails;
+      if (productId == subscriptionId) {
+        if (productKey == "monthly") {
+          selectedDetails = _productDetails[productId]!.firstWhere(
+            (pd) => pd.rawPrice == 1.99,
+            orElse: () {
+              loggingService.error("Monthly plan (\$1.99) not found for $productId. Available prices: ${_productDetails[productId]!.map((pd) => pd.rawPrice).toList()}");
+              return _productDetails[productId]!.first;
+            },
+          );
+        } else if (productKey == "yearly") {
+          selectedDetails = _productDetails[productId]!.firstWhere(
+            (pd) => pd.rawPrice == 19.99,
+            orElse: () {
+              loggingService.error("Yearly plan (\$19.99) not found for $productId. Available prices: ${_productDetails[productId]!.map((pd) => pd.rawPrice).toList()}");
+              return _productDetails[productId]!.first;
+            },
+          );
+        } else {
+          loggingService.error("Invalid productKey for subscription: $productKey");
+          selectedDetails = _productDetails[productId]!.first;
+        }
+      } else {
+        selectedDetails = _productDetails[productId]!.first;
+      }
+
+      loggingService.log("Selected ProductDetails: id=${selectedDetails.id}, price=${selectedDetails.price}, rawPrice=${selectedDetails.rawPrice}");
+
+      final purchaseParam = PurchaseParam(productDetails: selectedDetails);
+
+      try {
+        if (productId == lifetimePlanId) {
+          loggingService.log("Buying non-consumable product: $productId");
+          await _iap.buyNonConsumable(purchaseParam: purchaseParam);
+        } else {
+          loggingService.log("Buying subscription: $productId (productKey=$productKey, price=${selectedDetails.price})");
+          await _iap.buyConsumable(purchaseParam: purchaseParam, autoConsume: false);
+        }
+        loggingService.log("Purchase request sent for: $productId (productKey=$productKey, price=${selectedDetails.price})");
+      } catch (e, stack) {
+        loggingService.error("Purchase failed for $productId (productKey=$productKey): $e\n$stack");
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Purchase failed: $e")),
+        );
+      }
+    } finally {
+      _isPurchasing = false;
+    }
+  }
+
+  Future<void> _loadProducts() async {
+    final bool isAvailable = await _iap.isAvailable();
+    if (!isAvailable) {
+      loggingService.error("Google Play Billing is not available on this device");
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Product not loaded")),
+        const SnackBar(content: Text("Billing service unavailable")),
       );
       return;
     }
 
-  final purchaseParam = PurchaseParam(productDetails: _productDetails[productId]!);
+    final Set<String> inAppIds = useTestIds
+        ? {testPurchasedId, testCanceledId, testRefundedId, testUnavailableId}
+        : {lifetimePlanId};
 
-    if (productId == 'lifetime_plan_id') {
-      await _iap.buyNonConsumable(purchaseParam: purchaseParam);
-    } else {
-      await _iap.buyConsumable(purchaseParam: purchaseParam, autoConsume: false);
-    }
-  }
+    final Set<String> subscriptionIds = useTestIds ? <String>{} : {subscriptionId};
 
+    loggingService.log("Starting product load...");
 
-  Future<void> _loadProducts() async {
-  const ids = {'monthly_plan_id', 'yearly_plan_id', 'lifetime_plan_id'};
-  final response = await _iap.queryProductDetails(ids);
-    if (response.notFoundIDs.isNotEmpty) {
-      debugPrint("Products not found: ${response.notFoundIDs}");
+    _productDetails.clear();
+    _productDetails[lifetimePlanId] = [];
+    _productDetails[subscriptionId] = [];
+
+    if (inAppIds.isNotEmpty) {
+      loggingService.log("Querying in-app products: $inAppIds");
+      final inAppResponse = await _iap.queryProductDetails(inAppIds);
+
+      if (inAppResponse.error != null) {
+        loggingService.error("Error querying in-app products: ${inAppResponse.error!.message}");
+      }
+      if (inAppResponse.notFoundIDs.isNotEmpty) {
+        loggingService.error("In-App Products not found: ${inAppResponse.notFoundIDs}");
+      }
+
+      for (var pd in inAppResponse.productDetails) {
+        _productDetails[pd.id]!.add(pd);
+        loggingService.log("In-App product loaded: ${pd.id} (${pd.title}, ${pd.price})");
+        loggingService.log("ProductDetails for ${pd.id}: id=${pd.id}, title=${pd.title}, description=${pd.description}, price=${pd.price}, rawPrice=${pd.rawPrice}, currencyCode=${pd.currencyCode}");
+      }
     }
-    for (var pd in response.productDetails) {
-      _productDetails[pd.id] = pd;
+
+    if (subscriptionIds.isNotEmpty) {
+      loggingService.log("Querying subscriptions: $subscriptionIds");
+      final subResponse = await _iap.queryProductDetails(subscriptionIds);
+
+      if (subResponse.error != null) {
+        loggingService.error("Error querying subscriptions: ${subResponse.error!.message}");
+      }
+      if (subResponse.notFoundIDs.isNotEmpty) {
+        loggingService.error("Subscriptions not found: ${subResponse.notFoundIDs}");
+      }
+
+      for (var pd in subResponse.productDetails) {
+        _productDetails[pd.id]!.add(pd);
+        loggingService.log("Subscription loaded: ${pd.id} (${pd.title}, ${pd.price})");
+        loggingService.log("ProductDetails for ${pd.id}: id=${pd.id}, title=${pd.title}, description=${pd.description}, price=${pd.price}, rawPrice=${pd.rawPrice}, currencyCode=${pd.currencyCode}");
+      }
     }
+
+    _productDetails.forEach((id, detailsList) {
+      loggingService.log("Stored ProductDetails for $id: ${detailsList.map((pd) => 'price=${pd.price}, rawPrice=${pd.rawPrice}').toList()}");
+    });
+
+    loggingService.log("Product loading complete.");
   }
 
   Future<void> _handlePurchase(PurchaseDetails purchase) async {
-    if (purchase.productID == 'lifetime_plan_id') {
-      await purchaseService.setLifetime(true);
-    } else if (purchase.productID == 'monthly_plan_id') {
-      await purchaseService.extendSubscription(days: 30);
-    } else if (purchase.productID == 'yearly_plan_id') {
-      await purchaseService.extendSubscription(days: 365);
+    loggingService.log("📥 Handling purchase: productId=${purchase.productID}, status=${purchase.status}");
+    loggingService.log("PurchaseDetails: id=${purchase.productID}, status=${purchase.status}, transactionDate=${purchase.transactionDate}, purchaseID=${purchase.purchaseID}");
+
+    try {
+      if (purchase.status != PurchaseStatus.purchased && purchase.status != PurchaseStatus.restored) {
+        loggingService.error("Purchase not completed: status=${purchase.status}");
+        return;
+      }
+
+      if (purchase.productID == lifetimePlanId) {
+        loggingService.log("Granting lifetime unlock.");
+        await purchaseService.setLifetime(true);
+        setState(() {
+          isLifetimePurchased = true;
+        });
+        loggingService.log("Updated isLifetimePurchased to true after lifetime purchase.");
+      } else if (purchase.productID == subscriptionId) {
+        final productDetails = _productDetails[purchase.productID]?.firstWhere(
+          (pd) => pd.rawPrice == 1.99 || pd.rawPrice == 19.99,
+          orElse: () => _productDetails[purchase.productID]!.first,
+        );
+        if (productDetails != null && productDetails.rawPrice == 1.99) {
+          loggingService.log("Extending subscription by 30 days (monthly plan, price=${productDetails.price}).");
+          await purchaseService.extendSubscription(days: 30);
+        } else if (productDetails != null && productDetails.rawPrice == 19.99) {
+          loggingService.log("Extending subscription by 365 days (yearly plan, price=${productDetails.price}).");
+          await purchaseService.extendSubscription(days: 365);
+        } else {
+          loggingService.error("Unknown price for subscription: ${productDetails?.price ?? 'null'}");
+          loggingService.log("Extending subscription by 30 days (fallback, price=${productDetails?.price ?? 'unknown'}).");
+          await purchaseService.extendSubscription(days: 30);
+        }
+      }
+
+      if (purchase.pendingCompletePurchase) {
+        loggingService.log("Completing pending purchase for ${purchase.productID}");
+        await _iap.completePurchase(purchase);
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Purchase successful! App unlocked.")),
+      );
+
+      setState(() {
+        currentStep = 4;
+        loggingService.log("UI updated after purchase: currentStep=$currentStep, isLifetimePurchased=$isLifetimePurchased");
+      });
+
+      loggingService.log("🎉 Purchase flow finished successfully for ${purchase.productID}");
+    } catch (e, st) {
+      loggingService.error("🔥 Exception in _handlePurchase: $e");
+      loggingService.error(st.toString());
     }
-
-    if (purchase.pendingCompletePurchase) {
-      await _iap.completePurchase(purchase);
-    }
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text("Purchase successful! App unlocked.")),
-    );
-
-    setState(() {
-      currentStep = 4; // unlock main app
-    });
   }
 
+  Future<void> checkPastPurchases() async {
+    try {
+      loggingService.log("Starting restorePurchases...");
+      final bool isAvailable = await _iap.isAvailable();
+      if (!isAvailable) {
+        loggingService.error("Google Play Billing is not available on this device");
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Billing service unavailable")),
+        );
+        return;
+      }
+
+      bool hasLifetime = false;
+      final completer = Completer<void>();
+      late final StreamSubscription<List<PurchaseDetails>> tempSubscription;
+
+      tempSubscription = _iap.purchaseStream.listen(
+        (purchases) async {
+          loggingService.log("Received ${purchases.length} restored purchases");
+          for (var purchase in purchases) {
+            loggingService.log("Restored purchase: productId=${purchase.productID}, status=${purchase.status}");
+            if (purchase.productID == lifetimePlanId &&
+                (purchase.status == PurchaseStatus.purchased || purchase.status == PurchaseStatus.restored)) {
+              hasLifetime = true;
+              await _handlePurchase(purchase);
+            }
+          }
+          if (!completer.isCompleted) {
+            completer.complete();
+          }
+        },
+        onDone: () {
+          loggingService.log("Restore purchases stream closed.");
+          tempSubscription.cancel();
+          if (!completer.isCompleted) {
+            completer.complete();
+          }
+        },
+        onError: (error) {
+          loggingService.error("Error during restorePurchases: $error");
+          if (!completer.isCompleted) {
+            completer.complete();
+          }
+        },
+      );
+
+      await _iap.restorePurchases();
+      await completer.future;
+
+      if (!hasLifetime) {
+        loggingService.log("No valid lifetime purchase found. Clearing lifetime status.");
+        await purchaseService.setLifetime(false);
+        setState(() {
+          isLifetimePurchased = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("No valid purchases found. Lifetime access cleared.")),
+        );
+      }
+
+      loggingService.log("restorePurchases completed. hasLifetime: $hasLifetime");
+      tempSubscription.cancel();
+    } catch (e, st) {
+      loggingService.error("Error restoring purchases: $e\nStackTrace: $st");
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Error restoring purchases: $e")),
+      );
+    }
+  }
+
+  void onPurchase(String productKey) {
+    _purchase(productKey);
+  }
 
   Future<bool> _checkAccess() async {
-    // Ensure trial is started if none exists
-    final daysLeft = await purchaseService.remainingTrialDays();
-    if (daysLeft == 0) {
+    final startStr = await purchaseService.getTrialStart();
+    if (startStr == null) {
       await purchaseService.startTrial();
     }
-
-    // Now check entitlement (trial or purchase)
     return await purchaseService.isEntitled();
   }
 
+  void _setTrialDateForTesting() async {
+    final daysAgo = await showDialog<int>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Set Trial Start Date (Test Only)"),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text("Choose days ago for trial start:"),
+            const SizedBox(height: 10),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context, 0),
+              child: const Text("Today (14 days remaining)"),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context, 13),
+              child: const Text("13 days ago (1 day remaining)"),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context, 15),
+              child: const Text("15 days ago (expired)"),
+            ),
+          ],
+        ),
+      ),
+    );
 
-    
-final PurchaseService purchaseService = PurchaseService();
-
+    if (daysAgo != null) {
+      final trialStart = DateTime.now().subtract(Duration(days: daysAgo)).toIso8601String();
+      await purchaseService.setTrialStart(trialStart);
+      loggingService.log("Trial start set to $trialStart for testing (days ago: $daysAgo)");
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Trial start set to $daysAgo days ago")),
+      );
+      setState(() {}); // Trigger rebuild to reflect new trial status
+    }
+  }
 
   void configureServices(String key) async {
     await openAIService.setApiKey(key);
@@ -231,60 +665,57 @@ final PurchaseService purchaseService = PurchaseService();
     }
   }
 
-  // Save log file to Downloads folder
-Future<File?> saveLogToDownloads() async {
-  try {
-    final logFile = await loggingService.saveToFile();
+  Future<File?> saveLogToDownloads() async {
+    try {
+      final logFile = await loggingService.saveToFile();
 
-    if (Platform.isAndroid) {
-      // Request storage permission on Android
-      if (!await perm.Permission.storage.request().isGranted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Storage permission denied")),
-        );
-        return null;
+      if (Platform.isAndroid) {
+        if (!await perm.Permission.storage.request().isGranted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text("Storage permission denied")),
+          );
+          return null;
+        }
+        final downloadsDir = Directory('/storage/emulated/0/Download');
+        final targetPath = '${downloadsDir.path}/pai_logs.txt';
+        final targetFile = await logFile.copy(targetPath);
+        return targetFile;
+      } else if (Platform.isIOS) {
+        final dir = await getApplicationDocumentsDirectory();
+        final targetPath = '${dir.path}/pai_logs.txt';
+        final targetFile = await logFile.copy(targetPath);
+        return targetFile;
       }
-      final downloadsDir = Directory('/storage/emulated/0/Download');
-      final targetPath = '${downloadsDir.path}/pai_logs.txt';
-      final targetFile = await logFile.copy(targetPath);
-      return targetFile;
-    } else if (Platform.isIOS) {
-      final dir = await getApplicationDocumentsDirectory();
-      final targetPath = '${dir.path}/pai_logs.txt';
-      final targetFile = await logFile.copy(targetPath);
-      return targetFile;
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Error saving log: $e")),
+      );
+      return null;
     }
-  } catch (e) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text("Error saving log: $e")),
-    );
     return null;
   }
-  return null;
-}
 
-// Send log via email with pre-filled "to" field
-Future<void> sendLogByEmail() async {
-  final file = await saveLogToDownloads();
-  if (file == null) return;
+  Future<void> sendLogByEmail() async {
+    final file = await saveLogToDownloads();
+    if (file == null) return;
 
-  final Uri emailUri = Uri(
-    scheme: 'mailto',
-    path: 'admin@paidocassistant.com', // <-- replace with your support email
-    queryParameters: {
-      'subject': 'PAI App Logs',
-      'body': 'Attached are my logs for troubleshooting.',
-    },
-  );
-
-  if (await canLaunchUrl(emailUri)) {
-    await launchUrl(emailUri);
-  } else {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Could not launch email app')),
+    final Uri emailUri = Uri(
+      scheme: 'mailto',
+      path: 'admin@paidocassistant.com',
+      queryParameters: {
+        'subject': 'PAI App Logs',
+        'body': 'Attached are my logs for troubleshooting.',
+      },
     );
+
+    if (await canLaunchUrl(emailUri)) {
+      await launchUrl(emailUri);
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not launch email app')),
+      );
+    }
   }
-}
 
   void sendMessage() async {
     final query = queryController.text.trim();
@@ -337,6 +768,7 @@ Future<void> sendLogByEmail() async {
   @override
   void dispose() {
     _trialTimer?.cancel();
+    _subscription.cancel();
     dbService.clear();
     queryController.dispose();
     super.dispose();
@@ -347,109 +779,130 @@ Future<void> sendLogByEmail() async {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          daysLeft > 0
-              ? "Your free trial has $daysLeft day${daysLeft > 1 ? 's' : ''} remaining.\n\nUpgrade to continue using the app:"
-              : "Your free trial has ended.\n\nUpgrade to continue using the app:",
+          isLifetimePurchased
+              ? "You have lifetime access! No further purchase is needed."
+              : daysLeft > 0
+                  ? "Your free trial has $daysLeft day${daysLeft > 1 ? 's' : ''} remaining.\n\nUpgrade to continue using the app:"
+                  : "Your free trial has ended.\n\nUpgrade to continue using the app:",
           style: const TextStyle(fontSize: 16),
         ),
         const SizedBox(height: 20),
-        ElevatedButton(
-          onPressed: () => _purchase("monthly_plan_id"),
-          child: const Text("\$2 / month"),
-        ),
-        ElevatedButton(
-          onPressed: () => _purchase("yearly_plan_id"),
-          style: ElevatedButton.styleFrom(
-            backgroundColor: Colors.blueAccent,
+        if (!isLifetimePurchased) ...[
+          ElevatedButton(
+            onPressed: () => _purchase("monthly"),
+            child: const Text("\$1.99 / month"),
           ),
-          child: const Text("\$20 / year  ⭐ Most Popular"),
-        ),
+          ElevatedButton(
+            onPressed: () => _purchase("yearly"),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.blueAccent,
+            ),
+            child: const Text("\$19.99 / year  ⭐ Most Popular"),
+          ),
+        ],
         ElevatedButton(
-          onPressed: () => _purchase("lifetime_plan_id"),
-          child: const Text("\$49 Lifetime"),
+          onPressed: isLifetimePurchased ? null : () => _purchase("lifetime"),
+          child: const Text("\$49.99 Lifetime"),
+        ),
+        const SizedBox(height: 20),
+        ElevatedButton(
+          onPressed: () async {
+            await checkPastPurchases();
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text("Restoring purchases...")),
+            );
+          },
+          style: ElevatedButton.styleFrom(
+            backgroundColor: Colors.grey.shade300,
+            foregroundColor: Colors.black,
+          ),
+          child: const Text("Restore Purchases"),
+        ),
+        const SizedBox(height: 20),
+        ElevatedButton(
+          onPressed: _setTrialDateForTesting,
+          style: ElevatedButton.styleFrom(
+            backgroundColor: Colors.orange,
+            foregroundColor: Colors.black,
+          ),
+          child: const Text("Set Trial Date (Test Only)"),
         ),
       ],
     );
   }
 
-
-
   @override
   Widget build(BuildContext context) {
     final steps = [
       _buildStepCard(
-          step: 0,
-          title: "Disclaimer",
-          content: SingleChildScrollView(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  "This software is for informational purposes only.\n\n"
-                  "• It does NOT provide medical advice, diagnosis, or treatment.\n"
-                  "• It does NOT provide legal advice about Medicare, Medicaid, disability, or other benefits.\n"
-                  "• Always consult a qualified professional before making decisions.\n"
-                  "• All processing happens locally on your device. No data is sent to us.",
-                  style: TextStyle(fontSize: 16),
+        step: 0,
+        title: "Disclaimer",
+        content: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                "This software is for informational purposes only.\n\n"
+                "• It does NOT provide medical advice, diagnosis, or treatment.\n"
+                "• It does NOT provide legal advice about Medicare, Medicaid, disability, or other benefits.\n"
+                "• Always consult a qualified professional before making decisions.\n"
+                "• All processing happens locally on your device. No data is sent to us.",
+                style: TextStyle(fontSize: 16),
+              ),
+              const SizedBox(height: 20),
+              ExpansionTile(
+                title: const Text(
+                  "View Terms of Use",
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    color: Colors.blue,
+                  ),
                 ),
-                const SizedBox(height: 20),
-
-                // Expandable Terms of Use
-                ExpansionTile(
-                  title: const Text(
-                    "View Terms of Use",
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      color: Colors.blue,
+                onExpansionChanged: (expanded) {
+                  setState(() {
+                    termsExpanded = expanded;
+                  });
+                },
+                children: const [
+                  Padding(
+                    padding: EdgeInsets.all(12),
+                    child: Text(
+                      "Terms of Use (Effective Sept 18, 2025)\n\n"
+                      "1. License: You are granted a limited, non-exclusive license to use this app. "
+                      "You may not redistribute, resell, or reverse engineer it.\n\n"
+                      "2. No Advice: This app is informational only and does not provide medical, legal, "
+                      "or financial advice. Always consult a professional.\n\n"
+                      "3. Privacy: Documents are processed locally on your device. No data is sent to us.\n\n"
+                      "4. Purchases: Ads, subscriptions, or in-app purchases may apply. All sales final "
+                      "unless required by law.\n\n"
+                      "5. Disclaimer: The app is provided 'as-is' without warranties. We are not liable "
+                      "for damages or losses from its use.\n\n"
+                      "6. Governing Law: These terms are governed by U.S. law.\n\n"
+                      "© 2025 Christopher Petitpas. All rights reserved.",
+                      style: TextStyle(fontSize: 14),
                     ),
                   ),
-                  onExpansionChanged: (expanded) {
-                    setState(() {
-                      termsExpanded = expanded;
-                    });
-                  },
-                  children: const [
-                    Padding(
-                      padding: EdgeInsets.all(12),
-                      child: Text(
-                        "Terms of Use (Effective Sept 18, 2025)\n\n"
-                        "1. License: You are granted a limited, non-exclusive license to use this app. "
-                        "You may not redistribute, resell, or reverse engineer it.\n\n"
-                        "2. No Advice: This app is informational only and does not provide medical, legal, "
-                        "or financial advice. Always consult a professional.\n\n"
-                        "3. Privacy: Documents are processed locally on your device. No data is sent to us.\n\n"
-                        "4. Purchases: Ads, subscriptions, or in-app purchases may apply. All sales final "
-                        "unless required by law.\n\n"
-                        "5. Disclaimer: The app is provided 'as-is' without warranties. We are not liable "
-                        "for damages or losses from its use.\n\n"
-                        "6. Governing Law: These terms are governed by U.S. law.\n\n"
-                        "© 2025 Christopher Petitpas. All rights reserved.",
-                        style: TextStyle(fontSize: 14),
-                      ),
-                    ),
-                  ],
-                ),
-
-                const SizedBox(height: 20),
-
-                Center(
-                  child: ElevatedButton(
-                    onPressed: termsExpanded
-                        ? () {
-                            if (apiKey.isNotEmpty) {
-                              setState(() => currentStep = 4);
-                            } else {
-                              nextStep();
-                            }
+                ],
+              ),
+              const SizedBox(height: 20),
+              Center(
+                child: ElevatedButton(
+                  onPressed: termsExpanded
+                      ? () {
+                          if (apiKey.isNotEmpty) {
+                            setState(() => currentStep = 4);
+                          } else {
+                            nextStep();
                           }
-                        : null, // disabled until expanded
-                    child: const Text("I Understand"),
-                  ),
+                        }
+                      : null,
+                  child: const Text("I Understand"),
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
         ),
+      ),
       _buildStepCard(
         step: 1,
         title: "Welcome to PAI Assistant - Document Clarity AI",
@@ -461,13 +914,40 @@ Future<void> sendLogByEmail() async {
                 "Welcome to PAI your Personal AI Document Assistant!\n\n"
                 "With this application you can upload PDF documents and ask questions about their content.\n\n"
                 "This is very helpful with documents which come from Social Security, Medicare, Insurance, Legal, Medical, wherein the language is complex and difficult to understand.\n\n"
-                "It is also helpful when you have many documents and one seems to conflict with another.",
+                "It is also helpful when you have many documents and one seems to conflict with another.\n\n"
+                "If you have issues you can always send logs via the email icon in the top-right.\n\n"
+                "Free trial for 14 days, then \$1.99/month or \$19.99/year. Lifetime option also available.\n\n",
                 style: TextStyle(fontSize: 16),
               ),
               const SizedBox(height: 20),
               ElevatedButton(
                 onPressed: nextStep,
                 child: const Text("Next"),
+              ),
+              FutureBuilder<int>(
+                future: purchaseService.remainingTrialDays(),
+                builder: (context, snapshot) {
+                  if (!snapshot.hasData) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+                  return TextButton(
+                    onPressed: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => UpgradePage(
+                            trialDaysRemaining: snapshot.data!,
+                            onPurchase: _purchase,
+                            isLifetimePurchased: isLifetimePurchased,
+                            onRestorePurchases: checkPastPurchases,
+                            onSetTrialDate: _setTrialDateForTesting,
+                          ),
+                        ),
+                      );
+                    },
+                    child: const Text("Upgrade Now"),
+                  );
+                },
               ),
             ],
           ),
@@ -487,24 +967,22 @@ Future<void> sendLogByEmail() async {
                 "⚠️ Note: You will have only one opportunity to copy the key, so save it somewhere safe.\n\n"
                 "The key will be stored securely on your device and never shared.\n\n"
                 "Once set, this step will be skipped on future app launches.\n\n"
-                "If you need to change or remove the key, you can do so later from the top-right key icon.",
+                "If you need to change or remove the key, you can do so later from the top-right key icon.\n\n"
+                "You will get some free credits from OpenAI when you sign up. After that you will need to add some credits to your account via the Billing page.\n\n"
+                "The API costs are very low, especially if you enable the 'Limit Context' option in the final step. \$5 can last a long time!\n\n",
                 textAlign: TextAlign.center,
                 style: TextStyle(fontSize: 16),
               ),
               const SizedBox(height: 16),
-
-              // Button to open OpenAI API key page
               ElevatedButton.icon(
                 icon: const Icon(Icons.open_in_browser),
                 label: const Text("Open OpenAI API Key Page"),
                 onPressed: () async {
                   final Uri url = Uri.parse("https://platform.openai.com/account/api-keys");
-
                   if (await canLaunchUrl(url)) {
                     try {
                       await launchUrl(url, mode: LaunchMode.externalApplication);
                     } catch (e) {
-                      // fallback to default mode
                       await launchUrl(url, mode: LaunchMode.platformDefault);
                     }
                   } else {
@@ -514,10 +992,7 @@ Future<void> sendLogByEmail() async {
                   }
                 },
               ),
-
               const SizedBox(height: 8),
-
-              // Plain selectable URL for copy/paste
               SelectableText(
                 "https://platform.openai.com/account/api-keys",
                 style: const TextStyle(
@@ -526,9 +1001,7 @@ Future<void> sendLogByEmail() async {
                   fontSize: 14,
                 ),
               ),
-
               const SizedBox(height: 20),
-
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
@@ -556,8 +1029,7 @@ Future<void> sendLogByEmail() async {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                OutlinedButton(
-                    onPressed: prevStep, child: const Text("Back")),
+                OutlinedButton(onPressed: prevStep, child: const Text("Back")),
                 ElevatedButton(
                   onPressed: () {
                     if (apiKey.isNotEmpty) {
@@ -621,17 +1093,15 @@ Future<void> sendLogByEmail() async {
                   child: const Text("Next"),
                 ),
               ],
-            )
+            ),
           ],
         ),
       ),
-      // Step 5: Ask Questions
       _buildStepCard(
         step: 5,
         title: "Ask Questions",
         content: Column(
           children: [
-            // Explanation section for Limit Context
             Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -655,7 +1125,7 @@ Future<void> sendLogByEmail() async {
                             ? Icons.keyboard_arrow_up
                             : Icons.keyboard_arrow_down,
                         color: Colors.blue,
-                      )
+                      ),
                     ],
                   ),
                 ),
@@ -677,8 +1147,6 @@ Future<void> sendLogByEmail() async {
                   ),
               ],
             ),
-
-            // Chat History
             Expanded(
               child: ListView.builder(
                 controller: chatScrollController,
@@ -704,10 +1172,7 @@ Future<void> sendLogByEmail() async {
                 },
               ),
             ),
-
             const SizedBox(height: 8),
-
-            // Ask Input & Previous Questions (inside your Column)
             Row(
               children: [
                 Expanded(
@@ -722,7 +1187,6 @@ Future<void> sendLogByEmail() async {
                         ),
                         child: Column(
                           children: [
-                            // TextField for new / selected question
                             TextField(
                               controller: queryController,
                               decoration: const InputDecoration(
@@ -732,7 +1196,7 @@ Future<void> sendLogByEmail() async {
                               textInputAction: TextInputAction.send,
                               onChanged: (value) {
                                 setState(() {
-                                  showPreviousQuestions = value.isEmpty; // only show when empty
+                                  showPreviousQuestions = value.isEmpty;
                                 });
                               },
                               onTap: () {
@@ -742,11 +1206,9 @@ Future<void> sendLogByEmail() async {
                               },
                               onSubmitted: (_) => sendMessage(),
                             ),
-
-                            // Expanded previous questions list (only when box is focused & empty)
                             if (showPreviousQuestions && previousQuestions.isNotEmpty)
                               Container(
-                                constraints: const BoxConstraints(maxHeight: 150), // scrollable area
+                                constraints: const BoxConstraints(maxHeight: 150),
                                 margin: const EdgeInsets.only(top: 6),
                                 child: ListView.builder(
                                   shrinkWrap: true,
@@ -783,11 +1245,7 @@ Future<void> sendLogByEmail() async {
                 ),
               ],
             ),
-
-
             const SizedBox(height: 12),
-
-            // Limit Context Toggle
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
@@ -817,7 +1275,7 @@ Future<void> sendLogByEmail() async {
                   ],
                 ),
               ],
-            )
+            ),
           ],
         ),
       ),
@@ -833,7 +1291,6 @@ Future<void> sendLogByEmail() async {
         final entitled = snapshot.data ?? false;
 
         if (!entitled) {
-          // Fetch trial days separately here
           return FutureBuilder<int>(
             future: purchaseService.remainingTrialDays(),
             builder: (context, trialSnap) {
@@ -844,13 +1301,11 @@ Future<void> sendLogByEmail() async {
             },
           );
         } else {
-          // Defensive: clamp step to safe range
           final safeStep = (currentStep ?? 0).clamp(0, steps.length - 1);
           return steps[safeStep];
         }
       },
     );
-
 
     return Scaffold(
       backgroundColor: Colors.blue,
@@ -886,12 +1341,10 @@ Future<void> sendLogByEmail() async {
                     text: "PAI App Logs",
                     subject: "PAI Logs",
                   );
-
-                  // Show instruction after sharing
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
                       content: Text(
-                        "Select 'Save to Files' or your preferred app to store the log."
+                        "Select 'Save to Files' or your preferred app to store the log.",
                       ),
                       duration: Duration(seconds: 4),
                     ),
@@ -905,82 +1358,80 @@ Future<void> sendLogByEmail() async {
             ),
           ),
           Tooltip(
-          message: "Send logs via email",
-          child: IconButton(
-            icon: const Icon(Icons.email),
-            onPressed: () async {
-              try {
-                final logFile = await loggingService.saveToFile();
-                await Share.shareXFiles(
-                  [XFile(logFile.path)],
-                  text: "Here are my logs for troubleshooting.\n\nPlease send to admin@paidocassistant.com",
-                  subject: "PAI App Logs",
-                );
-
-                // Show instruction after sharing
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text(
-                      "Select your email app and verify the recipient before sending."
+            message: "Send logs via email",
+            child: IconButton(
+              icon: const Icon(Icons.email),
+              onPressed: () async {
+                try {
+                  final logFile = await loggingService.saveToFile();
+                  await Share.shareXFiles(
+                    [XFile(logFile.path)],
+                    text: "Here are my logs for troubleshooting.\n\nPlease send to admin@paidocassistant.com",
+                    subject: "PAI App Logs",
+                  );
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text(
+                        "Select your email app and verify the recipient before sending.",
+                      ),
+                      duration: Duration(seconds: 4),
                     ),
-                    duration: Duration(seconds: 4),
-                  ),
-                );
-              } catch (e) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text("Failed to send logs: $e")),
-                );
-              }
-            },
+                  );
+                } catch (e) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text("Failed to send logs: $e")),
+                  );
+                }
+              },
+            ),
           ),
-        ),
         ],
       ),
       body: Container(
-      margin: const EdgeInsets.all(16),
-      child: Column(
-        children: [
-          if (currentStep != null && currentStep! > 0)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 12),
-              child: Row(
-                children: [
-                  Image.asset(
-                    "assets/images/robot.png",
-                    width: 40,
-                    height: 40,
-                  ),
-                  const SizedBox(width: 12),
-                  const Text(
-                    "PAI Assistant - Document Clarity AI",
-                    style: TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white,
+        margin: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            if (currentStep != null && currentStep! > 0)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: Row(
+                  children: [
+                    Image.asset(
+                      "assets/images/robot.png",
+                      width: 40,
+                      height: 40,
                     ),
-                  ),
-                ],
-              ),
-            ),
-          Expanded(
-            child: Center(
-              child: Container(
-                constraints: const BoxConstraints(maxWidth: 600),
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(12),
-                  boxShadow: const [BoxShadow(blurRadius: 6, color: Colors.black26)],
+                    const SizedBox(width: 12),
+                    const Text(
+                      "PAI Assistant - Document Clarity AI",
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ],
                 ),
-                child: content,
+              ),
+            Expanded(
+              child: Center(
+                child: Container(
+                  constraints: const BoxConstraints(maxWidth: 600),
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(12),
+                    boxShadow: const [BoxShadow(blurRadius: 6, color: Colors.black26)],
+                  ),
+                  child: content,
+                ),
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
-    ),
-  );
-}
+    );
+  }
 
   Widget _buildStepCard({
     required int step,
