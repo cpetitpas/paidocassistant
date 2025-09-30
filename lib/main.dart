@@ -116,6 +116,23 @@ class UpgradePage extends StatelessWidget {
                 ),
                 child: const Text("Set Trial Date (Test Only)"),
               ),
+              const SizedBox(height: 20),
+              ElevatedButton(
+                onPressed: () async {
+                  final purchaseService = PurchaseService();
+                  await purchaseService.clearSubscription();
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text("Subscription canceled for testing")),
+                  );
+                  // Trigger a UI refresh to reflect the change
+                  Navigator.pop(context); // Return to main screen to check access
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.red,
+                  foregroundColor: Colors.white,
+                ),
+                child: const Text("Simulate Subscription Canceled (Test Only)"),
+              ),
             ],
           ),
         ),
@@ -439,60 +456,81 @@ class _WorkflowScreenState extends State<WorkflowScreen> {
   }
 
   Future<void> _handlePurchase(PurchaseDetails purchase) async {
-    loggingService.log("📥 Handling purchase: productId=${purchase.productID}, status=${purchase.status}");
-    loggingService.log("PurchaseDetails: id=${purchase.productID}, status=${purchase.status}, transactionDate=${purchase.transactionDate}, purchaseID=${purchase.purchaseID}");
+  loggingService.log("📥 Handling purchase: productId=${purchase.productID}, status=${purchase.status}");
+  loggingService.log("PurchaseDetails: id=${purchase.productID}, status=${purchase.status}, transactionDate=${purchase.transactionDate}, purchaseID=${purchase.purchaseID}");
 
-    try {
-      if (purchase.status != PurchaseStatus.purchased && purchase.status != PurchaseStatus.restored) {
-        loggingService.error("Purchase not completed: status=${purchase.status}");
-        return;
-      }
-
-      if (purchase.productID == lifetimePlanId) {
-        loggingService.log("Granting lifetime unlock.");
-        await purchaseService.setLifetime(true);
+  try {
+    if (purchase.status == PurchaseStatus.canceled) {
+      if (purchase.productID == subscriptionId) {
+        loggingService.log("Subscription canceled: ${purchase.productID}. Clearing subscription status.");
+        await purchaseService.clearSubscription();
         setState(() {
-          isLifetimePurchased = true;
+          // Update UI if needed
         });
-        loggingService.log("Updated isLifetimePurchased to true after lifetime purchase.");
-      } else if (purchase.productID == subscriptionId) {
-        final productDetails = _productDetails[purchase.productID]?.firstWhere(
-          (pd) => pd.rawPrice == 1.99 || pd.rawPrice == 19.99,
-          orElse: () => _productDetails[purchase.productID]!.first,
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Subscription canceled. Access may be restricted.")),
         );
-        if (productDetails != null && productDetails.rawPrice == 1.99) {
-          loggingService.log("Extending subscription by 30 days (monthly plan, price=${productDetails.price}).");
-          await purchaseService.extendSubscription(days: 30);
-        } else if (productDetails != null && productDetails.rawPrice == 19.99) {
-          loggingService.log("Extending subscription by 365 days (yearly plan, price=${productDetails.price}).");
-          await purchaseService.extendSubscription(days: 365);
-        } else {
-          loggingService.error("Unknown price for subscription: ${productDetails?.price ?? 'null'}");
-          loggingService.log("Extending subscription by 30 days (fallback, price=${productDetails?.price ?? 'unknown'}).");
-          await purchaseService.extendSubscription(days: 30);
-        }
       }
-
       if (purchase.pendingCompletePurchase) {
-        loggingService.log("Completing pending purchase for ${purchase.productID}");
+        loggingService.log("Completing canceled purchase for ${purchase.productID}");
         await _iap.completePurchase(purchase);
       }
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Purchase successful! App unlocked.")),
-      );
-
-      setState(() {
-        currentStep = 4;
-        loggingService.log("UI updated after purchase: currentStep=$currentStep, isLifetimePurchased=$isLifetimePurchased");
-      });
-
-      loggingService.log("🎉 Purchase flow finished successfully for ${purchase.productID}");
-    } catch (e, st) {
-      loggingService.error("🔥 Exception in _handlePurchase: $e");
-      loggingService.error(st.toString());
+      return;
     }
+
+    if (purchase.status != PurchaseStatus.purchased && purchase.status != PurchaseStatus.restored) {
+      loggingService.error("Purchase not completed: status=${purchase.status}");
+      return;
+    }
+
+    if (purchase.productID == lifetimePlanId) {
+      loggingService.log("Granting lifetime unlock.");
+      await purchaseService.setLifetime(true);
+      setState(() {
+        isLifetimePurchased = true;
+      });
+      loggingService.log("Updated isLifetimePurchased to true after lifetime purchase.");
+    } else if (purchase.productID == subscriptionId) {
+      final productDetails = _productDetails[purchase.productID]?.firstWhere(
+        (pd) => pd.rawPrice == 1.99 || pd.rawPrice == 19.99,
+        orElse: () {
+          loggingService.error("No matching product details for ${purchase.productID}");
+          return _productDetails[purchase.productID]!.first;
+        },
+      );
+      if (productDetails != null && productDetails.rawPrice == 1.99) {
+        loggingService.log("Extending subscription by 30 days (monthly plan, price=${productDetails.price}).");
+        await purchaseService.extendSubscription(days: 30);
+      } else if (productDetails != null && productDetails.rawPrice == 19.99) {
+        loggingService.log("Extending subscription by 365 days (yearly plan, price=${productDetails.price}).");
+        await purchaseService.extendSubscription(days: 365);
+      } else {
+        loggingService.error("Unknown price for subscription: ${productDetails?.price ?? 'null'}");
+        loggingService.log("Extending subscription by 30 days (fallback, price=${productDetails?.price ?? 'unknown'}).");
+        await purchaseService.extendSubscription(days: 30);
+      }
+    }
+
+    if (purchase.pendingCompletePurchase) {
+      loggingService.log("Completing pending purchase for ${purchase.productID}");
+      await _iap.completePurchase(purchase);
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text("Purchase successful! App unlocked.")),
+    );
+
+    setState(() {
+      currentStep = 4;
+      loggingService.log("UI updated after purchase: currentStep=$currentStep, isLifetimePurchased=$isLifetimePurchased");
+    });
+
+    loggingService.log("🎉 Purchase flow finished successfully for ${purchase.productID}");
+  } catch (e, st) {
+    loggingService.error("🔥 Exception in _handlePurchase: $e");
+    loggingService.error(st.toString());
   }
+}
 
   Future<void> checkPastPurchases() async {
     try {
@@ -507,6 +545,7 @@ class _WorkflowScreenState extends State<WorkflowScreen> {
       }
 
       bool hasLifetime = false;
+      bool hasValidSubscription = false;
       final completer = Completer<void>();
       late final StreamSubscription<List<PurchaseDetails>> tempSubscription;
 
@@ -519,6 +558,17 @@ class _WorkflowScreenState extends State<WorkflowScreen> {
                 (purchase.status == PurchaseStatus.purchased || purchase.status == PurchaseStatus.restored)) {
               hasLifetime = true;
               await _handlePurchase(purchase);
+            } else if (purchase.productID == subscriptionId) {
+              if (purchase.status == PurchaseStatus.purchased || purchase.status == PurchaseStatus.restored) {
+                hasValidSubscription = true;
+                await _handlePurchase(purchase);
+              } else if (purchase.status == PurchaseStatus.canceled) {
+                loggingService.log("Subscription canceled: ${purchase.productID}");
+                await purchaseService.clearSubscription();
+                if (purchase.pendingCompletePurchase) {
+                  await _iap.completePurchase(purchase);
+                }
+              }
             }
           }
           if (!completer.isCompleted) {
@@ -549,12 +599,14 @@ class _WorkflowScreenState extends State<WorkflowScreen> {
         setState(() {
           isLifetimePurchased = false;
         });
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("No valid purchases found. Lifetime access cleared.")),
-        );
       }
 
-      loggingService.log("restorePurchases completed. hasLifetime: $hasLifetime");
+      if (!hasValidSubscription) {
+        loggingService.log("No valid subscription found. Ensuring subscription status is cleared.");
+        await purchaseService.clearSubscription();
+      }
+
+      loggingService.log("restorePurchases completed. hasLifetime: $hasLifetime, hasValidSubscription: $hasValidSubscription");
       tempSubscription.cancel();
     } catch (e, st) {
       loggingService.error("Error restoring purchases: $e\nStackTrace: $st");

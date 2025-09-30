@@ -71,6 +71,11 @@ class PurchaseService {
     return expiry != null && DateTime.now().isBefore(expiry);
   }
 
+  Future<void> clearSubscription() async {
+    await _storage.delete(key: _subscriptionExpiryKey);
+    _loggingService.log("Subscription expiry cleared due to cancellation.");
+  }
+
   Future<bool> isEntitled() async {
     return await hasLifetime() || await hasValidSubscription() || await isTrialActive();
   }
