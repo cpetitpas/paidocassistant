@@ -1,15 +1,13 @@
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
-import 'openai_service.dart';
+import 'dart:convert';
 import 'logging_service.dart';
 
 class SQLiteService {
   late Database _db;
-  final OpenAIService openAI;
 
-  SQLiteService({required this.openAI});
+  SQLiteService();
 
-  /// Initialize the database
   Future<void> init() async {
     loggingService.log("Initializing SQLite database...");
     final path = join(await getDatabasesPath(), 'pai.db');
@@ -30,10 +28,9 @@ class SQLiteService {
     loggingService.log("SQLite database initialized at $path");
   }
 
-  /// Insert a chunk with its embedding
   Future<void> insertChunk(String file, String content, List<double> embedding) async {
     loggingService.log("Inserting chunk for file: $file");
-    final embeddingStr = openAI.serializeEmbedding(embedding);
+    final embeddingStr = jsonEncode(embedding);
     await _db.insert('chunks', {
       'file': file,
       'content': content,
@@ -42,14 +39,13 @@ class SQLiteService {
     loggingService.log("Chunk inserted.");
   }
 
-  /// Retrieve all chunks with embeddings
   Future<List<Map<String, dynamic>>> getAllChunksWithEmbeddings() async {
     loggingService.log("Retrieving all chunks with embeddings...");
     final result = await _db.query('chunks');
     final mapped = result.map((row) {
       final embStr = row['embedding'] as String?;
-      final embedding = embStr != null
-          ? openAI.deserializeEmbedding(embStr)
+      final embedding = embStr != null 
+          ? (jsonDecode(embStr) as List).map((e) => e as double).toList() 
           : <double>[];
       return {
         "text": row['content'] as String,
@@ -60,7 +56,6 @@ class SQLiteService {
     return mapped;
   }
 
-  /// Clear all chunks
   Future<void> clear() async {
     loggingService.log("Clearing database...");
     await _db.delete('chunks');

@@ -4,12 +4,11 @@ import 'package:file_picker/file_picker.dart';
 import 'dart:io';
 import 'sqlite_service.dart';
 import 'pdf_service.dart';
-import 'openai_service.dart';
+import 'tflite_service.dart';
 import 'logging_service.dart';
 import 'ask_service.dart';
 import 'purchase_service.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:in_app_purchase/in_app_purchase.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart' as perm;
@@ -183,7 +182,6 @@ class _WorkflowScreenState extends State<WorkflowScreen> {
   int? currentStep = 0;
   int trialDaysRemaining = 0;
   Timer? _trialTimer;
-  String apiKey = "";
   final ScrollController chatScrollController = ScrollController();
   final TextEditingController queryController = TextEditingController();
   final List<Map<String, String>> chatHistory = [];
@@ -197,22 +195,18 @@ class _WorkflowScreenState extends State<WorkflowScreen> {
   bool showLimitContextInfo = false;
   bool showPreviousQuestions = false;
 
-  late OpenAIService openAIService;
+  late TFLiteService tfliteService;
   late SQLiteService dbService;
   late PdfService pdfService;
   late AskService askService;
   late StreamSubscription<List<PurchaseDetails>> _subscription;
-  final FlutterSecureStorage storage = const FlutterSecureStorage();
   final PurchaseService purchaseService = PurchaseService();
+  String? _initError;
 
   @override
   void initState() {
     super.initState();
-    openAIService = OpenAIService();
-    dbService = SQLiteService(openAI: openAIService);
-    pdfService = PdfService(dbService, openAIService);
-    dbService.init();
-    askService = AskService(openAI: openAIService, dbService: dbService);
+    _initializeServices();
     _checkAccess();
     _subscription = _iap.purchaseStream.listen(
       (purchases) async {
@@ -251,9 +245,28 @@ class _WorkflowScreenState extends State<WorkflowScreen> {
       },
     );
     _loadProducts();
-    _loadApiKey();
     _checkLifetimeStatus();
     Future.delayed(Duration.zero, checkPastPurchases);
+  }
+
+  Future<void> _initializeServices() async {
+    try {
+      tfliteService = TFLiteService();
+      await tfliteService.init();
+      dbService = SQLiteService();
+      await dbService.init();
+      pdfService = PdfService(dbService, tfliteService);
+      askService = AskService(tflite: tfliteService, dbService: dbService);
+      setState(() {
+        _initError = null;
+      });
+      loggingService.log("All services initialized successfully.");
+    } catch (e, stack) {
+      loggingService.error("Service initialization failed: $e\nStack: $stack");
+      setState(() {
+        _initError = "Failed to initialize models: $e. Please check logs and ensure model files are correctly placed.";
+      });
+    }
   }
 
   Future<void> _checkLifetimeStatus() async {
@@ -262,17 +275,6 @@ class _WorkflowScreenState extends State<WorkflowScreen> {
       isLifetimePurchased = hasLifetime;
     });
     loggingService.log("Checked lifetime status: $hasLifetime");
-  }
-
-  Future<void> _loadApiKey() async {
-    String? storedKey = await storage.read(key: "OPENAI_API_KEY");
-    if (storedKey != null && storedKey.isNotEmpty) {
-      await openAIService.setApiKey(storedKey);
-      setState(() {
-        apiKey = storedKey;
-        currentStep = 0;
-      });
-    }
   }
 
   bool _isPurchasing = false;
@@ -665,24 +667,7 @@ class _WorkflowScreenState extends State<WorkflowScreen> {
       setState(() {}); // Trigger rebuild to reflect new trial status
     }
   }
-
-  void configureServices(String key) async {
-    await openAIService.setApiKey(key);
-    await storage.write(key: "OPENAI_API_KEY", value: key);
-    setState(() {
-      apiKey = key;
-      currentStep = 4;
-    });
-  }
-
-  void clearApiKey() async {
-    await storage.delete(key: "OPENAI_API_KEY");
-    setState(() {
-      apiKey = "";
-      currentStep = 2;
-    });
-  }
-
+  
   void nextStep() {
     setState(() {
       if (currentStep != null) {
@@ -821,6 +806,7 @@ class _WorkflowScreenState extends State<WorkflowScreen> {
   void dispose() {
     _trialTimer?.cancel();
     _subscription.cancel();
+    tfliteService.dispose();
     dbService.clear();
     queryController.dispose();
     super.dispose();
@@ -939,15 +925,7 @@ class _WorkflowScreenState extends State<WorkflowScreen> {
               const SizedBox(height: 20),
               Center(
                 child: ElevatedButton(
-                  onPressed: termsExpanded
-                      ? () {
-                          if (apiKey.isNotEmpty) {
-                            setState(() => currentStep = 4);
-                          } else {
-                            nextStep();
-                          }
-                        }
-                      : null,
+                  onPressed: nextStep,
                   child: const Text("I Understand"),
                 ),
               ),
@@ -1007,96 +985,6 @@ class _WorkflowScreenState extends State<WorkflowScreen> {
       ),
       _buildStepCard(
         step: 2,
-        title: "Getting Started: OpenAI API Key",
-        content: SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.center,
-            children: [
-              const Text(
-                "This application leverages the power of OpenAI's GPT models to provide accurate and context-aware answers based on your documents.\n\n"
-                "You will need an OpenAI API key to use this application.\n\n"
-                "You can sign up or log in to your OpenAI account, then create a secret key and copy it to your clipboard.\n\n"
-                "⚠️ Note: You will have only one opportunity to copy the key, so save it somewhere safe.\n\n"
-                "The key will be stored securely on your device and never shared.\n\n"
-                "Once set, this step will be skipped on future app launches.\n\n"
-                "If you need to change or remove the key, you can do so later from the top-right key icon.\n\n"
-                "You will get some free credits from OpenAI when you sign up. After that you will need to add some credits to your account via the Billing page.\n\n"
-                "The API costs are very low, especially if you enable the 'Limit Context' option in the final step. \$5 can last a long time!\n\n",
-                textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 16),
-              ),
-              const SizedBox(height: 16),
-              ElevatedButton.icon(
-                icon: const Icon(Icons.open_in_browser),
-                label: const Text("Open OpenAI API Key Page"),
-                onPressed: () async {
-                  final Uri url = Uri.parse("https://platform.openai.com/account/api-keys");
-                  if (await canLaunchUrl(url)) {
-                    try {
-                      await launchUrl(url, mode: LaunchMode.externalApplication);
-                    } catch (e) {
-                      await launchUrl(url, mode: LaunchMode.platformDefault);
-                    }
-                  } else {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text("Cannot launch URL")),
-                    );
-                  }
-                },
-              ),
-              const SizedBox(height: 8),
-              SelectableText(
-                "https://platform.openai.com/account/api-keys",
-                style: const TextStyle(
-                  color: Colors.blue,
-                  decoration: TextDecoration.underline,
-                  fontSize: 14,
-                ),
-              ),
-              const SizedBox(height: 20),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  OutlinedButton(onPressed: prevStep, child: const Text("Back")),
-                  ElevatedButton(onPressed: nextStep, child: const Text("Continue")),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ),
-      _buildStepCard(
-        step: 3,
-        title: "Enter OpenAI API Key",
-        content: Column(
-          children: [
-            TextField(
-              onChanged: (v) => apiKey = v,
-              decoration: const InputDecoration(
-                labelText: "OPENAI_API_KEY",
-                border: OutlineInputBorder(),
-              ),
-            ),
-            const SizedBox(height: 12),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                OutlinedButton(onPressed: prevStep, child: const Text("Back")),
-                ElevatedButton(
-                  onPressed: () {
-                    if (apiKey.isNotEmpty) {
-                      configureServices(apiKey);
-                    }
-                  },
-                  child: const Text("Next"),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-      _buildStepCard(
-        step: 4,
         title: "Select PDFs",
         content: Column(
           children: [
@@ -1150,7 +1038,7 @@ class _WorkflowScreenState extends State<WorkflowScreen> {
         ),
       ),
       _buildStepCard(
-        step: 5,
+        step: 3,
         title: "Ask Questions",
         content: Column(
           children: [
@@ -1342,6 +1230,26 @@ class _WorkflowScreenState extends State<WorkflowScreen> {
 
         final entitled = snapshot.data ?? false;
 
+        if (_initError != null) {
+          return Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text(
+                  _initError!,
+                  style: const TextStyle(color: Colors.red, fontSize: 16),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 16),
+                ElevatedButton(
+                  onPressed: _initializeServices,
+                  child: const Text("Retry Initialization"),
+                ),
+              ],
+            ),
+          );
+        }
+
         if (!entitled) {
           return FutureBuilder<int>(
             future: purchaseService.remainingTrialDays(),
@@ -1365,22 +1273,13 @@ class _WorkflowScreenState extends State<WorkflowScreen> {
         title: const Text("PAI Assistant - Document Clarity AI"),
         backgroundColor: Colors.blue.shade700,
         actions: [
-          if (currentStep != null && currentStep! > 0) ...[
-            Tooltip(
-              message: "Clear saved OpenAI API Key",
-              child: IconButton(
-                icon: const Icon(Icons.key_off),
-                onPressed: clearApiKey,
-              ),
+          Tooltip(
+            message: "Exit App",
+            child: IconButton(
+              icon: const Icon(Icons.exit_to_app),
+              onPressed: exitApp,
             ),
-            Tooltip(
-              message: "Exit App",
-              child: IconButton(
-                icon: const Icon(Icons.exit_to_app),
-                onPressed: exitApp,
-              ),
-            ),
-          ],
+          ),
           Tooltip(
             message: "Download log file",
             child: IconButton(

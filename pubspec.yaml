@@ -10,6 +10,11 @@ flutter:
 
 version: 1.0.0+19
 
+assets:
+  - assets/models/embedding_model.tflite
+  - assets/models/mobilebert_qa.tflite
+  - assets/models/vocab.txt
+
 dependencies:
   flutter:
     sdk: flutter
